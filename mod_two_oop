@@ -1,0 +1,283 @@
+###################################################
+# This is a more object oriented approach to this #
+# but depending on the imported code, this may    #
+# not be an applicable solution                   #
+###################################################
+
+import base64
+import datetime
+import io
+import os
+import struct
+import sys
+import textwrap
+import threading
+import time
+import tkinter as tk
+import urllib.request
+
+import openai
+import pyaudio
+import pvcobra
+import pvleopard
+import pvporcupine
+import requests
+import schedule
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance, ImageTk
+from pvleopard import *
+from pvrecorder import PvRecorder
+from time import sleep
+from threading import Thread
+
+class LocalLLM:
+    def __init__(self, api_url, api_token):
+        self.api_url = api_url
+        self.api_token = api_token
+
+    def get_image_description(self, category):
+        headers = {
+            "Authorization": f"Bearer {self.api_token}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "llama3.1:latest",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"Reply with only a 250 character-long realistic {category} description"
+                }
+            ]
+        }
+        response = requests.post(self.api_url, headers=headers, json=data)
+
+        if response.status_code == 200:
+            response_data = response.json()
+            message_content = response_data['choices'][0]['message']['content']
+            return message_content
+        else:
+            print(f"API request failed with status code: {response.status_code}")
+            print(response.text)
+            return None
+
+class StableDiffusion:
+    def __init__(self, screen_width, screen_height):
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+
+    def generate_image(self, prompt):
+        url = "http://10.0.3.9:7860/sdapi/v1/txt2img"
+        headers = {"Content-Type": "application/json"}
+        data = {
+            "prompt": prompt,
+            "width": self.screen_width,
+            "height": self.screen_height,
+            "steps": 60,
+            "seed": -1,
+        }
+
+        try:
+            response = requests.post(url, json=data, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+            base64_image = result.get("images", [None])[0]
+
+            if not base64_image:
+                print("Error: No image data returned.")
+                return None
+
+            image_data = base64.b64decode(base64_image)
+            return image_data
+        except requests.exceptions.RequestException as e:
+            print(f"Error communicating with the Stable Diffusion API: {e}")
+            return None
+
+class DisplayController:
+    def __init__(self, root):
+        self.root = root
+        self.screen_width = root.winfo_screenwidth()
+        self.screen_height = root.winfo_screenheight()
+
+    def close_image_window(self):
+        windows = self.root.winfo_children()
+        for window in windows:
+            if isinstance(window, tk.Toplevel):
+                if window.attributes("-fullscreen"):
+                    print("closing image window")
+                    window.destroy()
+
+    def turn_on_display(self):
+        current_time()
+        os.system("xset dpms force on")
+        print("\nTurning on display.")
+        sleep(1)
+
+    def turn_off_display(self):
+        current_time()
+        print("\nTurning off display.")
+        os.system("xset dpms force off")
+        sleep(1)
+
+    def display_logo(self):
+        image_window = tk.Toplevel(self.root)
+        image_window.title("Image Window")
+        image_window.geometry(f"{self.screen_width}x{self.screen_height}+0+0")
+        image_window.attributes("-fullscreen", True)
+        image_window.overrideredirect(True)
+        image_window.configure(bg='black')
+        image = Image.open("/home/hacksoarizer/Lumina/Lumina Logo.png")
+        original_width, original_height = image.size
+        scale = max(self.screen_width / original_width, self.screen_height / original_height)
+        scaled_width = int(original_width * scale)
+        scaled_height = int(original_height * scale)
+        image = image.resize((scaled_width, scaled_height))
+        image_photo = ImageTk.PhotoImage(image)
+        image_canvas = tk.Canvas(image_window, bg='#000000', width=self.screen_width, height=self.screen_height)
+        x = (self.screen_width - scaled_width) // 2
+        y = (self.screen_height - scaled_height) // 2
+        image_canvas.create_image(x, y, image=image_photo, anchor=tk.NW)
+        image_canvas.pack()
+        image_window.update()
+
+    def update_image(self, image_data):
+        if image_data is None:
+            print("Error: No image data to display.")
+            return
+
+        image_window = tk.Toplevel(self.root)
+        image_window.title("Image Window")
+        image_window.geometry(f"{self.screen_width}x{self.screen_height}+0+0")
+        image_window.attributes("-fullscreen", True)
+        image_window.overrideredirect(True)
+        image_window.configure(bg='black')
+
+        try:
+            image = Image.open(io.BytesIO(image_data))
+            original_width, original_height = image.size
+            scale = max(self.screen_width / original_width, self.screen_height / original_height)
+            scaled_width = int(original_width * scale)
+            scaled_height = int(original_height * scale)
+            image = image.resize((scaled_width, scaled_height))
+            image_photo = ImageTk.PhotoImage(image)
+            image_canvas = tk.Canvas(image_window, bg='#000000', width=self.screen_width, height=self.screen_height)
+            x = (self.screen_width - scaled_width) // 2
+            y = (self.screen_height - scaled_height) // 2
+            image_canvas.create_image(x, y, image=image_photo, anchor=tk.NW)
+            image_canvas.pack()
+            image_window.update()
+        except Exception as e:
+            print(f"Error loading image: {e}")
+
+class CommandProcessor:
+    def __init__(self, display_controller, llm, diffusion):
+        self.display_controller = display_controller
+        self.llm = llm
+        self.diffusion = diffusion
+
+    def process(self, transcript, DisplayOn_list, DisplayOff_list, CloseProgram_list):
+        if any(word in transcript for word in CloseProgram_list):
+            close_program()
+            return
+        if any(word in transcript for word in DisplayOn_list):
+            self.display_controller.turn_on_display()
+            return
+        if any(word in transcript for word in DisplayOff_list):
+            self.display_controller.turn_off_display()
+            return
+        if "Random" in transcript:
+            words = transcript.split()
+            random_index = words.index("Random")
+            category = " ".join(words[random_index + 1:]).strip()
+            if category:
+                self.draw_random(category)
+            else:
+                self.draw_random("random")
+            return
+        self.draw_request(transcript)
+
+    def draw_request(self, transcript):
+        prompt = transcript
+        print("You requested the following image: " + prompt)
+        print("\nCreating image...\n")
+        image_data = self.diffusion.generate_image(transcript)
+        if image_data:
+            print("Displaying generated image.")
+            self.display_controller.update_image(image_data)
+        else:
+            print("Failed to generate image or image URL is None.")
+
+    def draw_random(self, category):
+        random = self.llm.get_image_description(category)
+        print("Generating random image: " + random)
+        print("\nCreating random image...\n")
+        image_data = self.diffusion.generate_image(random)
+        if image_data:
+            print("Displaying random generated image.")
+            self.display_controller.update_image(image_data)
+        else:
+            print("Failed to random generate image or image URL is None.")
+
+class Recorder(Thread):
+    def __init__(self):
+        super().__init__()
+        self._pcm = list()
+        self._is_recording = False
+        self._stop = False
+
+    def is_recording(self):
+        return self._is_recording
+
+    def run(self):
+        self._is_recording = True
+
+        recorder = PvRecorder(device_index=-1, frame_length=512)
+        recorder.start()
+
+        while not self._stop:
+            self._pcm.extend(recorder.read())
+        recorder.stop()
+
+        self._is_recording = False
+
+    def stop(self):
+        self._stop = True
+        while self._is_recording:
+            pass
+
+        return self._pcm
+
+def current_time():
+    time_now = datetime.datetime.now()
+    formatted_time = time_now.strftime("%m-%d-%Y %I:%M %p\n")
+    print("The current date and time is:", formatted_time)
+
+def detect_silence():
+    cobra = pvcobra.create(access_key=pv_access_key)
+
+    silence_pa = pyaudio.PyAudio()
+
+    cobra_audio_stream = silence_pa.open(
+        rate=cobra.sample_rate,
+        channels=1,
+        format=pyaudio.paInt16,
+        input=True,
+        frames_per_buffer=cobra.frame_length)
+
+    last_voice_time = time.time()
+
+    while True:
+        cobra_pcm = cobra_audio_stream.read(cobra.frame_length)
+        cobra_pcm = struct.unpack_from("h" * cobra.frame_length, cobra_pcm)
+        if cobra.process(cobra_pcm) > 0.2:
+            last_voice_time = time.time()
+        else:
+            silence_duration = time.time() - last_voice_time
+            if silence_duration > 0.8:
+                print("End of query detected\n")
+                cobra_audio_stream.stop_stream()
+                cobra_audio_stream.close()
+                cobra.delete()
+                break
+
+def display_on(transcript):
+    for word in DisplayOn_list:
+        if word in
