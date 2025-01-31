@@ -1,3 +1,10 @@
+##############################################################################
+# Fixed a a few naming errors in the method / function calls that were not   #
+# properly referenced. Also initialized some globals that had not been       #
+# initialized. However, they may be in one of the imports, so may have to    #
+# recind. One of theconditional statements was missing a closing parenthesis.#
+##############################################################################
+
 from PIL import Image
 import base64
 import requests
